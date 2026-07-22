@@ -2,13 +2,10 @@
 const axios = require('axios');
 const FormData = require('form-data');
 
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const BOT_TOKEN = process.env.BOT_TOKEN || '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
-if (!BOT_TOKEN || !OPENAI_API_KEY) {
-  console.error('Missing BOT_TOKEN or OPENAI_API_KEY in .env');
-  process.exit(1);
-}
+// Only check if they're empty right before using them
 
 const OPENAI_HEADERS = {
   Authorization: `Bearer ${OPENAI_API_KEY}`,
