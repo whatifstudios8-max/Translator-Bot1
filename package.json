@@ -1,0 +1,15 @@
+{
+  "name": "translate-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot: English <-> any language translation, plus voice note transcription/translation (OpenAI only)",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.16.3",
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "form-data": "^4.0.0"
+  }
+}
