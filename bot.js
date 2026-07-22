@@ -1,4 +1,5 @@
 // require('dotenv').config();  // Comment this out for Railway deploymentconst { Telegraf, Markup } = require('telegraf');
+const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 const FormData = require('form-data');
 
