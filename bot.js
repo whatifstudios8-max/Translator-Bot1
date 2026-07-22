@@ -1,29 +1,19 @@
-// require('dotenv').config();  // Comment this out for Railway deploymentconst { Telegraf, Markup } = require('telegraf');
+require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
-const FormData = require('form-data');
+const LanguageDetect = require('languagedetect');
 
-const BOT_TOKEN = process.env.BOT_TOKEN || '';
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const HF_API_TOKEN = process.env.HF_API_TOKEN;
+const MYMEMORY_EMAIL = process.env.MYMEMORY_EMAIL; // optional, raises free daily quota
 
-// And don't call bot.launch() if BOT_TOKEN is empty
-if (!BOT_TOKEN) {
-  console.error('BOT_TOKEN not set');
+if (!BOT_TOKEN || !HF_API_TOKEN) {
+  console.error('Missing BOT_TOKEN or HF_API_TOKEN in .env');
   process.exit(1);
-}const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-
-// Only check if they're empty right before using them
-
-const OPENAI_HEADERS = {
-  Authorization: `Bearer ${OPENAI_API_KEY}`,
-  'Content-Type': 'application/json',
-};
-
-// Cheap, fast model — plenty accurate for word/phrase translation and
-// single-language detection. Swap to 'gpt-4o' if you want higher quality
-// on longer or more nuanced text.
-const TEXT_MODEL = 'gpt-4o-mini';
+}
 
 const bot = new Telegraf(BOT_TOKEN);
+const lngDetector = new LanguageDetect();
 
 // Common target languages shown as quick-pick buttons when input is English.
 // Add/remove entries here to change the picker options.
@@ -45,75 +35,96 @@ const COMMON_LANGS = [
 // scale to multiple workers.
 const pending = new Map();
 
-async function chatCompletion(messages) {
-  const res = await axios.post(
-    'https://api.openai.com/v1/chat/completions',
-    { model: TEXT_MODEL, messages, temperature: 0 },
-    { headers: OPENAI_HEADERS }
-  );
-  return res.data.choices[0].message.content.trim();
+// Maps a handful of full language names (as returned by the `languagedetect`
+// library) to ISO 639-1 codes, for the Latin-script phrase-detection path.
+const NAME_TO_CODE = {
+  english: 'en', spanish: 'es', french: 'fr', german: 'de', portuguese: 'pt',
+  italian: 'it', dutch: 'nl', swedish: 'sv', turkish: 'tr', vietnamese: 'vi',
+  indonesian: 'id', polish: 'pl', romanian: 'ro',
+};
+
+// Unicode script ranges that reliably identify a non-Latin-script language,
+// even for a single word (statistical detectors need whole sentences to be
+// accurate, but script alone is enough here — this is free, instant, and
+// runs locally with zero API calls).
+const SCRIPT_RANGES = [
+  { code: 'bn', re: /[\u0980-\u09FF]/ },   // Bengali
+  { code: 'hi', re: /[\u0900-\u097F]/ },   // Devanagari (Hindi)
+  { code: 'ar', re: /[\u0600-\u06FF]/ },   // Arabic
+  { code: 'ja', re: /[\u3040-\u30FF]/ },   // Hiragana/Katakana (check before CJK)
+  { code: 'ko', re: /[\uAC00-\uD7A3]/ },   // Hangul
+  { code: 'zh', re: /[\u4E00-\u9FFF]/ },   // CJK Unified Ideographs
+  { code: 'ru', re: /[\u0400-\u04FF]/ },   // Cyrillic
+  { code: 'el', re: /[\u0370-\u03FF]/ },   // Greek
+];
+
+// Best-effort, zero-cost language detection:
+// 1. Non-Latin script -> identified reliably by character range alone.
+// 2. Latin script, 3+ words -> statistical detection (reasonably accurate
+//    on full phrases, unreliable on single words).
+// 3. Latin script, 1-2 words -> assume English (documented limitation —
+//    use the "xx: word" shortcut to force a different source/target).
+function detectLanguage(text) {
+  for (const { code, re } of SCRIPT_RANGES) {
+    if (re.test(text)) return code;
+  }
+
+  const wordCount = text.trim().split(/\s+/).length;
+  if (wordCount >= 3) {
+    const guesses = lngDetector.detect(text, 1);
+    if (guesses.length) {
+      const code = NAME_TO_CODE[guesses[0][0]];
+      if (code) return code;
+    }
+  }
+
+  return 'en';
 }
 
-// Returns an ISO 639-1 code (e.g. 'en', 'es', 'bn') for the language the
-// text is written in.
-async function detectLanguage(text) {
-  const code = await chatCompletion([
-    {
-      role: 'system',
-      content:
-        'Identify the language of the text the user sends. ' +
-        'Reply with ONLY the ISO 639-1 two-letter language code (e.g. "en", "es", "bn"). ' +
-        'No punctuation, no explanation, nothing else.',
-    },
-    { role: 'user', content: text },
-  ]);
-  return code.toLowerCase().replace(/[^a-z]/g, '').slice(0, 2);
-}
+// Translates via MyMemory's free API (no key required).
+async function translateText(text, target, source = 'en') {
+  const params = { q: text, langpair: `${source}|${target}` };
+  if (MYMEMORY_EMAIL) params.de = MYMEMORY_EMAIL;
 
-// Translates `text` into the language identified by ISO code `target`.
-// `source` is optional context (not required for GPT, but improves accuracy
-// when known).
-async function translateText(text, target, source) {
-  const sourceNote = source ? ` (the source text is in "${source}")` : '';
-  const translated = await chatCompletion([
-    {
-      role: 'system',
-      content:
-        `Translate the user's text into the language with ISO 639-1 code "${target}"${sourceNote}. ` +
-        'Reply with ONLY the translation — no quotes, no explanation, no original text.',
-    },
-    { role: 'user', content: text },
-  ]);
+  const res = await axios.get('https://api.mymemory.translated.net/get', { params });
+  const translated = res.data?.responseData?.translatedText;
+
+  if (!translated || res.data?.responseStatus !== 200) {
+    throw new Error('MyMemory translation failed: ' + JSON.stringify(res.data));
+  }
   return { text: translated };
 }
 
-// Downloads a Telegram voice note and sends it to OpenAI Whisper for
-// transcription. Whisper auto-detects the spoken language, so no per-user
-// language setting is needed. Returns { text, language }.
-async function transcribeVoice(fileUrl) {
+// Transcribes via Hugging Face's free Inference API running Whisper.
+// The model may need to "warm up" on first use (returns 503 with an
+// estimated_time) — this retries a few times while it loads.
+async function transcribeVoice(fileUrl, retries = 4) {
   const audioRes = await axios.get(fileUrl, { responseType: 'arraybuffer' });
 
-  const form = new FormData();
-  form.append('file', Buffer.from(audioRes.data), {
-    filename: 'voice.oga',
-    contentType: 'audio/ogg',
-  });
-  form.append('model', 'whisper-1');
-  form.append('response_format', 'verbose_json');
-
-  const res = await axios.post(
-    'https://api.openai.com/v1/audio/transcriptions',
-    form,
-    {
-      headers: {
-        ...form.getHeaders(),
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      maxBodyLength: Infinity,
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const res = await axios.post(
+        'https://api-inference.huggingface.co/models/openai/whisper-large-v3',
+        Buffer.from(audioRes.data),
+        {
+          headers: {
+            Authorization: `Bearer ${HF_API_TOKEN}`,
+            'Content-Type': 'audio/ogg',
+          },
+        }
+      );
+      return { text: (res.data.text || '').trim() };
+    } catch (err) {
+      const status = err.response?.status;
+      const waitSec = err.response?.data?.estimated_time || 5;
+      if (status === 503 && attempt < retries - 1) {
+        await new Promise((r) => setTimeout(r, waitSec * 1000));
+        continue;
+      }
+      throw err;
     }
-  );
-
-  return { text: res.data.text.trim(), language: res.data.language };
+  }
+  return { text: '' };
 }
 
 function buildLangKeyboard() {
@@ -155,7 +166,7 @@ async function handleIncomingText(ctx, input, prefix = '') {
     return ctx.reply(`${prefix}${result.text}`);
   }
 
-  const detected = await detectLanguage(input);
+  const detected = detectLanguage(input);
 
   if (detected === 'en') {
     pending.set(ctx.chat.id, input);
@@ -180,7 +191,7 @@ bot.on('text', async (ctx) => {
 
 bot.on('voice', async (ctx) => {
   try {
-    const statusMsg = await ctx.reply('Transcribing...');
+    const statusMsg = await ctx.reply('Transcribing... (first request may take ~20s while the model warms up)');
     const fileUrl = await ctx.telegram.getFileLink(ctx.message.voice.file_id);
     const { text } = await transcribeVoice(fileUrl.href || fileUrl);
 
