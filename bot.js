@@ -4,7 +4,12 @@ const axios = require('axios');
 const FormData = require('form-data');
 
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+
+// And don't call bot.launch() if BOT_TOKEN is empty
+if (!BOT_TOKEN) {
+  console.error('BOT_TOKEN not set');
+  process.exit(1);
+}const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
 // Only check if they're empty right before using them
 
