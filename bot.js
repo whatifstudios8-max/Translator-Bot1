@@ -4,11 +4,10 @@ const axios = require('axios');
 const LanguageDetect = require('languagedetect');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const HF_API_TOKEN = process.env.HF_API_TOKEN;
 const MYMEMORY_EMAIL = process.env.MYMEMORY_EMAIL; // optional, raises free daily quota
 
-if (!BOT_TOKEN || !HF_API_TOKEN) {
-  console.error('Missing BOT_TOKEN or HF_API_TOKEN in .env');
+if (!BOT_TOKEN) {
+  console.error('Missing BOT_TOKEN in .env');
   process.exit(1);
 }
 
@@ -95,38 +94,6 @@ async function translateText(text, target, source = 'en') {
   return { text: translated };
 }
 
-// Transcribes via Hugging Face's free Inference API running Whisper.
-// The model may need to "warm up" on first use (returns 503 with an
-// estimated_time) — this retries a few times while it loads.
-async function transcribeVoice(fileUrl, retries = 4) {
-  const audioRes = await axios.get(fileUrl, { responseType: 'arraybuffer' });
-
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      const res = await axios.post(
-        'https://api-inference.huggingface.co/models/openai/whisper-large-v3',
-        Buffer.from(audioRes.data),
-        {
-          headers: {
-            Authorization: `Bearer ${HF_API_TOKEN}`,
-            'Content-Type': 'audio/ogg',
-          },
-        }
-      );
-      return { text: (res.data.text || '').trim() };
-    } catch (err) {
-      const status = err.response?.status;
-      const waitSec = err.response?.data?.estimated_time || 5;
-      if (status === 503 && attempt < retries - 1) {
-        await new Promise((r) => setTimeout(r, waitSec * 1000));
-        continue;
-      }
-      throw err;
-    }
-  }
-  return { text: '' };
-}
-
 function buildLangKeyboard() {
   const buttons = COMMON_LANGS.map((l) =>
     Markup.button.callback(l.label, `lang:${l.code}`)
@@ -141,10 +108,9 @@ function buildLangKeyboard() {
 
 bot.start((ctx) =>
   ctx.reply(
-    "Send me any word or phrase — typed or as a voice note.\n\n" +
+    "Send me any word or phrase.\n\n" +
       "• If it's in English, I'll ask which language to translate it into.\n" +
-      "• If it's in another language, I'll translate it straight to English.\n" +
-      "• Voice notes get transcribed first, then handled the same way.\n\n" +
+      "• If it's in another language, I'll translate it straight to English.\n\n" +
       "Shortcut: type `es: hello` to translate directly to Spanish (use any language code).",
     { parse_mode: 'Markdown' }
   )
@@ -189,28 +155,9 @@ bot.on('text', async (ctx) => {
   }
 });
 
-bot.on('voice', async (ctx) => {
-  try {
-    const statusMsg = await ctx.reply('Transcribing... (first request may take ~20s while the model warms up)');
-    const fileUrl = await ctx.telegram.getFileLink(ctx.message.voice.file_id);
-    const { text } = await transcribeVoice(fileUrl.href || fileUrl);
-
-    await ctx.telegram
-      .deleteMessage(ctx.chat.id, statusMsg.message_id)
-      .catch(() => {});
-
-    if (!text) {
-      return ctx.reply("Couldn't make out any speech in that voice note.");
-    }
-
-    // Always show the transcript, then the same detect/translate flow
-    // (language picker or auto-translate to English) runs on top of it.
-    await handleIncomingText(ctx, text, `📝 "${text}"\n\n`);
-  } catch (err) {
-    console.error(err.response?.data || err.message);
-    return ctx.reply('Sorry, I couldn\'t process that voice note. Please try again.');
-  }
-});
+// Voice note support (transcription) is deferred for now — see README.
+// When added back, it slots in here as a `bot.on('voice', ...)` handler
+// that transcribes the note and passes the text into handleIncomingText().
 
 bot.action(/lang:(.+)/, async (ctx) => {
   const target = ctx.match[1];
