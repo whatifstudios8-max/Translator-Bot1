@@ -1,7 +1,7 @@
 {
   "name": "translate-bot",
   "version": "1.0.0",
-  "description": "Telegram bot: English <-> any language translation, plus voice note transcription (100% free stack, no self-hosting)",
+  "description": "Telegram bot: English <-> any language text translation (100% free, no self-hosting). Voice notes to be added later.",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
